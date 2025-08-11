@@ -1,70 +1,68 @@
 import requests
+from datetime import datetime, timedelta
 
-# API Key from Odds API
-API_KEY = 'YOUR_API_KEY'  # Replace with your actual API key from OddsAPI
+BASE_URL = "https://www.balldontlie.io/api/v1"
 
-# Set the sport to 'basketball_nba' and configure your region, markets, and other parameters
-SPORT = 'basketball_nba'
-REGIONS = 'us'  # US betting markets
-MARKETS = 'h2h,spreads'  # Moneyline (h2h) and Spread (spreads)
-ODDS_FORMAT = 'decimal'  # Decimal odds format
-DATE_FORMAT = 'iso'  # ISO date format
-
-# Get a list of sports available
-def get_sports():
-    sports_url = f'https://api.the-odds-api.com/v4/sports'
-    response = requests.get(sports_url, params={'api_key': API_KEY})
-
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Error fetching sports data: {response.status_code}")
+def get_team_stats(team_name: str):
+    # Step 1: Match team name or abbreviation
+    resp = requests.get(f"{BASE_URL}/teams")
+    if resp.status_code != 200:
+        print("Error fetching teams:", resp.status_code)
         return None
+    teams = resp.json().get("data", [])
 
-# Fetch odds for NBA matchups
-def get_betting_odds():
-    # Requesting the odds for upcoming NBA games
-    odds_url = f'https://api.the-odds-api.com/v4/sports/{SPORT}/odds'
-    response = requests.get(
-        odds_url,
+    normalized = team_name.lower()
+    matched = next(
+        (t for t in teams if normalized in t["full_name"].lower() or normalized == t["abbreviation"].lower()), None
+    )
+    if not matched:
+        print(f"Team '{team_name}' not found.")
+        return None
+    team_id, name, abbr = matched["id"], matched["full_name"], matched["abbreviation"]
+
+    # Step 2: Fetch last 5 recent regular season games
+    end = datetime.now()
+    start = end - timedelta(days=60)
+    games_resp = requests.get(
+        f"{BASE_URL}/games",
         params={
-            'api_key': API_KEY,
-            'regions': REGIONS,
-            'markets': MARKETS,
-            'oddsFormat': ODDS_FORMAT,
-            'dateFormat': DATE_FORMAT,
+            "team_ids[]": team_id,
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+            "per_page": 100
         }
     )
-    
-    if response.status_code == 200:
-        odds_data = response.json()
-        return odds_data
-    else:
-        print(f"Error fetching odds: {response.status_code}")
+    if games_resp.status_code != 200:
+        print(f"Error fetching games for {team_name}: {games_resp.status_code}")
+        return None
+    games = [g for g in games_resp.json().get("data", []) if not g.get("postseason")]
+    recent = games[:5]
+    if not recent:
+        print(f"No recent games found for {team_name}")
         return None
 
-# Fetch specific team stats for a matchup
-def get_team_stats(team_name):
-    # Get the list of all teams from the NBA API
-    teams_url = "https://www.balldontlie.io/api/v1/teams"
-    response = requests.get(teams_url)
-    
-    if response.status_code != 200:
-        print(f"Error fetching teams: {response.status_code}")
-        return None
-    
-    teams_data = response.json()["data"]
-    
-    team = next((t for t in teams_data if t['full_name'].lower() == team_name.lower()), None)
-    
-    if team:
-        team_stats = {
-            'team_name': team['full_name'],
-            'team_id': team['id'],
-            'abbreviation': team['abbreviation']
-        }
-        return team_stats
-    else:
-        print(f"Team {team_name} not found.")
-        return None
+    wins = pts_for = pts_against = 0
+    for g in recent:
+        home = g["home_team"]["id"] == team_id
+        team_score = g["home_team_score"] if home else g["visitor_team_score"]
+        opp_score = g["visitor_team_score"] if home else g["home_team_score"]
+        pts_for += team_score
+        pts_against += opp_score
+        wins += team_score > opp_score
 
+    avg_sf = round(pts_for / len(recent), 1)
+    avg_sa = round(pts_against / len(recent), 1)
+    win_pct = round((wins / len(recent)) * 100, 1)
+
+    return {
+        "team_name": name,
+        "team_id": team_id,
+        "abbreviation": abbr,
+        "avg_points_scored": avg_sf,
+        "avg_points_allowed": avg_sa,
+        "win_rate": win_pct
+    }
+
+def get_betting_odds():
+    # No external odds integration—stats are used to infer advice instead
+    return None

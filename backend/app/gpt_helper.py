@@ -1,48 +1,56 @@
 import os
 from openai import OpenAI
-from app.nba_stats import get_team_stats, get_betting_odds
+from app.nba_stats import get_team_stats
+from app.user_data import cache_betting_tip, get_cached_betting_tip
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def generate_betting_tip(team1, team2):
-    # Get team stats (team performance)
+    # Check Redis cache
+    cached = get_cached_betting_tip(team1, team2)
+    if cached:
+        return cached
+
+    # Fetch team stats
     team1_stats = get_team_stats(team1)
     team2_stats = get_team_stats(team2)
-    
-    # Get betting odds for moneyline, spread, and over/under
-    odds = get_betting_odds()
-    
-    # Extract odds data
-    team1_moneyline = odds[0]['home_team_moneyline']  # Assuming first event in the list
-    team2_moneyline = odds[0]['away_team_moneyline']
-    team1_spread = odds[0]['home_team_spread']
-    team2_spread = odds[0]['away_team_spread']
-    over_under = odds[0]['total_points']
 
+    if not team1_stats or not team2_stats:
+        return "Could not fetch team stats. Please check team names."
+
+    # Build GPT prompt based on stats only
     prompt = f"""
-    You are an expert NBA betting advisor. 
-    Given the following matchup between the {team1} and {team2}:
-    
-    - {team1} win percentage: {team1_stats['team_name']}
-    - {team2} win percentage: {team2_stats['team_name']}
-    - {team1} points per game: {team1_stats['team_id']}
-    - {team2} points per game: {team2_stats['team_id']}
-    
-    Betting odds:
-    - Moneyline: {team1}: {team1_moneyline}, {team2}: {team2_moneyline}
-    - Spread: {team1} {team1_spread}, {team2} {team2_spread}
-    - Over/Under: {over_under}
-    
-    Analyze these odds and stats, and recommend the best betting strategy:
-    - Which team do you predict will win?
-    - Should bettors bet on the moneyline, spread, or total points?
-    - What’s your confidence level in this bet, and why?
-    """
-    
-    # Send the prompt to GPT-3 for the prediction
+You are an expert NBA betting advisor for college-aged fans.
+
+Here's a matchup between the {team1_stats['team_name']} and the {team2_stats['team_name']}.
+
+{team1_stats['team_name']} (last 5 games):
+- Win rate: {team1_stats['win_rate']}%
+- Avg points scored: {team1_stats['avg_points_scored']}
+- Avg points allowed: {team1_stats['avg_points_allowed']}
+
+{team2_stats['team_name']} (last 5 games):
+- Win rate: {team2_stats['win_rate']}%
+- Avg points scored: {team2_stats['avg_points_scored']}
+- Avg points allowed: {team2_stats['avg_points_allowed']}
+
+Based on this recent performance data:
+1. Which team is more likely to win?
+2. What would your betting advice be (moneyline, spread, over/under)?
+3. Include your confidence level and short explanation why.
+
+Keep the tone confident but friendly, like you're texting a friend who bets casually.
+"""
+
+    # Call OpenAI
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}]
     )
-    
-    return response.choices[0].message.content
+
+    result = response.choices[0].message.content
+
+    # Cache the result
+    cache_betting_tip(team1, team2, result)
+
+    return result
